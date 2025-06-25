@@ -1,0 +1,1511 @@
+                        ;Z80 Membership Card - CP/M BIOS
+                        ;File Z80MC_GO.asm
+
+                        ;Warning: FCB's must never cross page boundaries.
+                        ;Some RAM must map to definitions in ROM
+
+                        ;Revisions
+                        ;Dec 10 - Changed routine for Track/Sec to Logical to multipy by actual Sectors per Track, no longer fixed coded for 25 SPT
+                        ;Dec 10 - Changed location of BIOS SCRATCH AREA to band-aid fix large disk errors on D:
+
+
+      = 000D            CR		EQU 13
+      = 000A            LF		EQU 10
+      = 0000            EOS		EQU 0
+
+      = 0080            CPM_DSK_BUFF	EQU 80H	;Default CPM Buffer of 128 Bytes
+
+      = 00C1            RAMROM		equ	0xC1	;RAM /ROM selection
+
+
+F400                    		ORG 0F400H
+F400  CD 06F6           		CALL	PRINTI		;System Start, Display Welcome Message	
+F403  0D0A5A38 304D4320 		DB	CR,LF,"Z80MC CP/M LOADER.  Dec 10, 2018",CR,LF,EOS
+F40B  43502F4D 204C4F41
+F413  4445522E 20204465
+F41B  63203130 2C203230
+F423  31380D0A 00
+                        		
+F428  C3 55F4           		JP	CPM_BOOTER
+
+F42B  00                FCB_CONFIG	DB	0	;FSTAT		.BLOCK	1	;+0  Status of FCB, 00=File Not Open
+F42C  43504D44 49534B53 		DB	"CPMDISKSTXT"		;+1
+F434  545854
+F437  0000              FCB_CONFIG_C1	DW	00000H	;AFClus0	;+12 First Cluster of File as given by the Directory Entry.
+F439  FFFF              		DW	0FFFFH	;CRFClus	;+14 Current Relative Cluster location in file, (0 to F for a system with 32 Sectors per Cluster)
+F43B  FFFF              		DW	0FFFFH	;CAFClus	;+16 Current Absolute Cluster location in file, set to AFClus0, then updated with FAT
+F43D  FFFF              		DW	0FFFFH	;RFSec		;+18 Relative Sector being addressed (0 to 500, based 26 sectors per track and 77 tracks Divide by 4)
+F43F  FFFF              		DW	0FFFFH	;SSOC		;+20 Starting Sector of Cluster, this is the first Sector for that Cluster
+F441  FFFF              		DW	0FFFFH			;+22
+F443  FFFF              		DW	0FFFFH	;ABS_SEC	;+24 Absolute Sector of Current Relative Sector
+F445  FFFF              		DW	0FFFFH			;
+F447  FFFF              		DW	0FFFFH			;+28
+F449  FFFF              		DW	0FFFFH			;+30
+                        		
+F44B  73EE              DPBPTR		DW	DPB0
+
+F44D   (0004)           FILESIZESEARCH	DS	4		;32BIT File Size to Search for
+F451   (0004)           X32		DS	4		;32BIT Converted ASCII-HEX input (File Size)
+
+
+F455  21 80FB           CPM_BOOTER	LD	HL,SDISKA	;Clear RAM for the Drive FCB's
+F458  06 80             		LD	B,128		;These FCB's are custom to this firmware
+F45A  CD 19F1           		CALL	ROM_SUB		;and are for the FAT-16 files on the SD cards
+F45D  8C00              		DW	VCLEAR_BLOCK	;Nothing to do with CP/M.			
+
+F45F  21 2BF4           		LD	HL,FCB_CONFIG
+F462  22 08FF           		LD	(FCB_PTR),HL
+                        				
+F465  CD 19F1           		CALL	ROM_SUB
+F468  E300              		DW	VSD_OPEN
+F46A  CA DFF5           		JP Z,	GO_HALT
+                        		
+                        ;DUMP_FILE	CALL	GET_LINE	;HL = LINE_BUFF
+                        ;		CALL	PRINT
+                        ;		JR	DUMP_FILE
+                        		
+F46D  11 80FB           		LD	DE,SDISKA
+F470  06 04             		LD	B,4	
+F472  CD CCF5           FETCH_LP	CALL	FETCH_NAME	;Preload all SD_FCB's with file names for 4 disks
+F475  10 FB             		DJNZ	FETCH_LP
+                        									
+F477  21 77F4           BOOT_MENU	LD	HL,BOOT_MENU
+F47A  E5                		PUSH	HL
+                        		
+F47B  CD 06F6           		CALL	PRINTI	
+F47E  0D0A4D65 6E750D0A 		DB	CR,LF,"Menu",CR,LF
+F486  0D0A4320 2020424F 		DB	CR,LF,"C   BOOT CP/M"
+F48E  4F542043 502F4D
+F495  0D0A4C20 20204C49 		DB	CR,LF,"L   LIST FILES"
+F49D  53542046 494C4553
+F4A5  0D0A00            		DB	CR,LF,EOS
+
+F4A8  AF                		XOR	A		;Loop through the 4 SD_FCB's and try to open/init the FCB's
+F4A9  F5                BMD_LP		PUSH	AF
+F4AA  57                		LD	D,A		;D=A=File (0 to 3) (D for printing)
+F4AB  CD 6BF0           		CALL	SET_FCB_PTR
+F4AE  22 4BF4           		LD	(DPBPTR),HL	;Save the DPB location
+F4B1  7A                		LD	A,D
+F4B2  3C                		INC	A
+F4B3  CD 0EF6           		CALL	PUT_HEX
+F4B6  CD 06F6           		CALL	PRINTI
+F4B9  202D2044 69736B20 		DB	" - Disk ",EOS
+F4C1  00
+F4C2  7A                		LD	A,D
+F4C3  C6 41             		ADD	A,'A'
+F4C5  CD F9F0           		CALL	PUT_CHAR
+F4C8  CD 06F6           		CALL	PRINTI
+F4CB  203D2000          		DB	" = ",EOS
+
+F4CF  3E C0             		LD	A,0xC0		;Enable view of File And Size
+F4D1  32 0CFF           		LD	(VIEW_FLAGS),A
+F4D4  CD 19F1           		CALL	ROM_SUB		;Display Filename and Size
+F4D7  E300              		DW	VSD_OPEN
+
+                        		
+F4D9  21 4EFF           		LD	HL,FILESIZE		;Save the File Size for search
+F4DC  11 4DF4           		LD	DE,FILESIZESEARCH
+F4DF  01 0400           		LD	BC,4			;4 bytes
+F4E2  EDB0              		LDIR				;COPY 4 BYTES
+
+                        					;Read Config file to find paramaters for a file of this size
+F4E4  21 2BF4           		LD	HL,FCB_CONFIG
+F4E7  22 08FF           		LD	(FCB_PTR),HL
+                        		
+F4EA  AF                		XOR	A		;Disable view of File And Size
+F4EB  32 0CFF           		LD	(VIEW_FLAGS),A
+                        		
+F4EE  CD 19F1           		CALL	ROM_SUB		;Silent Open
+F4F1  E300              		DW	VSD_OPEN
+
+F4F3  CA DFF5           		JP Z,	GO_HALT
+
+F4F6  CD 19F1           SSF_LP		CALL	ROM_SUB		;GET A LINE FROM THE FILE @FCB_PTR
+F4F9  F200              		DW	VLINE_INPUT
+F4FB  20 39             		JR NZ,	SSF_NOTFOUND	;Jump if EOF reached
+                        		
+F4FD  11 51F4           		LD	DE,X32
+F500  CD F7F5           		CALL	ASC_BIN32	;Convert the 8 ASCII chars @(HL) to 32Bit @(DE)
+F503  38 F1             		JR C,	SSF_LP		;Jump if invalid HEX Chars encountered
+
+F505  E5                		PUSH	HL		;Save Pointer to Line Input
+F506  21 4DF4           		LD	HL,FILESIZESEARCH
+F509  CD ECF5           		CALL	COMP32
+F50C  E1                		POP	HL		;Restore Line Pointer
+F50D  20 E7             		JR NZ,	SSF_LP
+
+                        					;HURRAY, WE HAVE FOUND THE RIGHT DISK SIZE		
+                        					;COPY DPB, PRINT MSG
+F50F  23                		INC	HL		;Advance past Space
+F510  ED5B 4BF4         		LD	DE,(DPBPTR)
+F514  06 0F             		LD	B,15
+F516  CD 19F1           GTL_COPY_LP	CALL	ROM_SUB		;(DE) = VAL("&H" + LEFT$((HL),2)); HL=HL+2
+F519  AA00              		DW	VASC2BIN
+F51B  30 0F             		JR NC,	GTL_HEX_OK
+F51D  CD 06F6           		CALL	PRINTI
+F520  20424144 20484558 		DB	" BAD HEX",EOS
+F528  00
+F529  C3 DFF5           		JP	GO_HALT		
+F52C  13                GTL_HEX_OK	INC	DE
+F52D  10 E7             		DJNZ	GTL_COPY_LP
+F52F  CD 19F1           		CALL	ROM_SUB	
+F532  5700              		DW	VPRINT		;Print rest of line.
+F534  18 1B             		JR	BMD_NEXT
+
+F536  CD 06F6           SSF_NOTFOUND	CALL	PRINTI
+F539  202D2044 49534B20 		DB	" - DISK SIZE NOT LISTED",EOS
+F541  53495A45 204E4F54
+F549  204C4953 54454400
+
+F551  F1                BMD_NEXT	POP	AF
+F552  3C                		INC	A
+F553  FE 04             		CP	4
+F555  C2 A9F4           		JP NZ,	BMD_LP
+
+F558  21 8000           		LD	HL,CPM_DSK_BUFF		;Default CPM DMAADD
+F55B  22 F2FA           		LD	(DMAADD),HL
+F55E  21 80FB           		LD	HL,SDISKA		;Default FCB_PTR for Disk-A
+F561  22 08FF           		LD	(FCB_PTR),HL
+
+F564  CD 06F6           MENU_ENTER	CALL	PRINTI		;BOOT Menu
+F567  0D0A3E00          		DB CR,LF,"\>",EOS
+
+F56B  21 80FF           		LD	HL,RC_TYPE	;IF NOT AUTO BOOT
+F56E  CB7E              		BIT	7,(HL)
+F570  28 0C             		JR  Z,	MENU_GETCHAR	;Skip the dots
+                        		
+F572  06 0A             		LD	B,10
+F574  CD AFF5           		CALL	DOT_GETCHAR	;C=1 if dots timed out or <TAB>, or C=0 and A=char
+F577  DA 00EE           		JP  C,	CBOOTV
+F57A  CBBE              		RES	7,(HL)		;Cancel AUTO BOOT
+F57C  18 03             		JR  	MENU_DO
+
+F57E  CD 01F1           MENU_GETCHAR	CALL	GET_CHAR
+
+F581  CD 20F6           MENU_DO		CALL	TO_UPPER
+F584  FE 43             		CP 	'C'		;
+F586  CA 00EE           		JP Z, 	CBOOTV		; C = BOOT CP/M
+F589  FE 4C             		CP 	'L'		;
+F58B  CA C6F5           		JP Z, 	DO_PRINT_DIR	; L = List Files
+F58E  FE 31             		CP	'1'
+F590  DA 77F4           		JP C,	BOOT_MENU
+F593  FE 35             		CP	'5'
+F595  D2 77F4           		JP NC,	BOOT_MENU
+F598  3D                		DEC	A
+F599  CD 6BF0           		CALL	SET_FCB_PTR
+F59C  CD 29F6           		CALL	INPUT_FNAME
+F59F  2A 08FF           		LD	HL, (FCB_PTR)
+F5A2  23                		INC	HL		;FNAME
+F5A3  EB                		EX	DE, HL	
+F5A4  21 43FF           		LD	HL,FILENAME
+F5A7  01 0B00           		LD	BC,11
+F5AA  EDB0              		LDIR
+F5AC  C3 77F4           		JP	BOOT_MENU
+                        		
+                        				
+                        ;===============================================
+                        ;DOT_GETCHAR
+                        ;in:	B=Count of Dots
+                        ;out: 	C=1, No Char (Time Out)
+                        ;	C=0, A = Char
+                        ;-----------------------------------------------
+F5AF  3E 01             DOT_GETCHAR	LD	A,1
+F5B1  CD 19F1           		CALL	ROM_SUB		;
+F5B4  5400              		DW	VTIMED_GETCHAR	;C=0, A=Byte from Buffer; C=1, no byte
+F5B6  38 05             		JR  C,	DGC_DOT
+F5B8  FE 09             		CP	9
+F5BA  28 08             		JR   Z,	DGC_RET
+F5BC  C9                		RET			;Return to check charcter
+F5BD  3E 2E             DGC_DOT		LD	A,'.'		;Put out some thinking dots
+F5BF  CD F9F0           		CALL	PUT_CHAR
+F5C2  10 EB             		DJNZ	DOT_GETCHAR
+F5C4  37                DGC_RET		SCF
+F5C5  C9                		RET
+                        		
+                        	
+                        		
+                        		
+
+F5C6  CD 3BF6           DO_PRINT_DIR	CALL	PRINT_DIR
+F5C9  C3 64F5           		JP	MENU_ENTER
+
+F5CC  C5                FETCH_NAME	PUSH	BC
+F5CD  D5                		PUSH	DE
+F5CE  CD D9F5           		CALL	GET_LINE	;Returns HL=Pointer to Line Buffer
+F5D1  D1                		POP	DE
+F5D2  01 2000           		LD	BC,32	;COPY 32 CHARACTERS (ONLY chars 2-12 IS FILE NAME)
+F5D5  EDB0              		LDIR
+F5D7  C1                		POP	BC
+F5D8  C9                		RET
+
+F5D9  CD 19F1           GET_LINE	CALL	ROM_SUB		;GET A LINE FROM THE FILE @FCB_PTR ;HL = LINE_BUFF
+F5DC  F200              		DW	VLINE_INPUT
+F5DE  C8                		RET Z
+
+F5DF  CD 06F6           GO_HALT		CALL	PRINTI
+F5E2  202D2048 414C5400 		DB	" - HALT",EOS
+F5EA  18 FE             		JR	$
+
+F5EC  01 0400           COMP32		LD	BC,4
+F5EF  1A                COMP32_LP	LD	A,(DE)
+F5F0  EDA1              		CPI
+F5F2  C0                		RET	NZ
+F5F3  E0                		RET	PO
+F5F4  13                		INC	DE		
+F5F5  18 F8             		JR	COMP32_LP
+
+                        ;Convert the 8 ASCII chars @(HL) to 32Bit @(DE)
+                        ;Input:	HL points to ASCII
+                        ;	DE points to 32Bit Variable in Memory
+                        ;Output:HL points to next ASCII input string
+                        ;	DE unchanged
+                        ;	A, B Destroyed
+                        ;	C = set if invalid ASCII HEX Char encountered
+F5F7  D5                ASC_BIN32	PUSH	DE
+F5F8  06 04             		LD	B,4
+F5FA  CD 19F1           AB_LP		CALL	ROM_SUB
+F5FD  AA00              		DW	VASC2BIN
+F5FF  38 03             		JR C,	AB_RET
+F601  13                		INC	DE
+F602  10 F6             		DJNZ	AB_LP
+F604  D1                AB_RET		POP	DE
+F605  C9                		RET
+
+
+                        ;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+                        ;PRINT IMMEDIATE
+                        ;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+F606  E3                PRINTI:		EX	(SP),HL		;HL = Top of Stack
+F607  CD 19F1           		CALL	ROM_SUB
+F60A  5700              		DW	VPRINT
+F60C  E3                		EX	(SP),HL		;Move updated return address back to stack
+F60D  C9                		RET
+                        		
+F60E  CD 3AF1           PUT_HEX		CALL	MAP_ROM
+F611  CD 6E00           		CALL	VPUT_HEX
+F614  C3 30F1           		JP	MAP_RAM
+
+F617  CD 3AF1           RX_COUNT	CALL	MAP_ROM
+F61A  CD 4E00           		CALL	VRX_COUNT
+F61D  C3 30F1           		JP	MAP_RAM
+
+F620  CD 3AF1           TO_UPPER	CALL	MAP_ROM
+F623  CD B300           		CALL	VTO_UPPER
+F626  C3 30F1           		JP	MAP_RAM
+
+F629  CD 3AF1           INPUT_FNAME	CALL	MAP_ROM
+F62C  CD E000           		CALL	VINPUT_FNAME
+F62F  C3 30F1           		JP	MAP_RAM
+
+F632  CD 3AF1           PRINT_FNAME	CALL	MAP_ROM
+F635  CD DD00           		CALL	VPRINT_FNAME
+F638  C3 30F1           		JP	MAP_RAM
+
+
+F63B  CD 3AF1           PRINT_DIR	CALL	MAP_ROM
+F63E  CD E900           		CALL	VPRINT_DIR
+F641  C3 30F1           		JP	MAP_RAM
+
+F644  CD 3AF1           PUT_BYTE	CALL	MAP_ROM
+F647  CD 7100           		CALL	VPUT_BYTE
+F64A  C3 30F1           		JP	MAP_RAM
+
+F64D  CD 3AF1           PUT_HL		CALL	MAP_ROM
+F650  7C                		LD	A,H
+F651  CD 7100           		CALL	VPUT_BYTE
+F654  7D                		LD	A,L
+F655  CD 7100           		CALL	VPUT_BYTE
+F658  C3 30F1           		JP	MAP_RAM
+
+
+
+
+
+                        ;----------------------------------------------------------------------------------------------------; CP/M BIOS
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;----------------------------------------------------------------------------------------------------; CP/M BIOS
+
+
+
+                        ;***************************************************
+                        ;*** THIS BEGINS THE AREA WHICH REQUIRES CHANGES ***
+                        ;***      FOR DIFFERENT CONSOLE I/O SYSTEMS      ***
+                        ;***************************************************
+
+      = 003D            MSIZE		EQU  61	;MEMORY SIZE IN KBYTES.
+
+                        ;*******************************************************
+                        ;*** THIS IS THE END OF THE AREA WHICH NORMALLY NEED ***
+                        ;***     BE CHANGED FOR MOST CONSOLE I/O SYSTEMS     ***
+                        ;*******************************************************
+
+      = 0003            IOBYTE		EQU  3		;ADDRESS OF I/O BYTE.
+      = D800            CCP		EQU  (MSIZE-7)*1024	;START OF CPM (D800)
+      = E006            BDOS		EQU  CCP+806H		;START OF BDOS (E006)
+      = EE00            BIOS		EQU  CCP+1600H		;START OF BIOS (EE00)
+      = 1600            CPMLEN		EQU  BIOS-CCP		;LENGTH OF CPM SYSTEM (LESS BIOS)
+      = 002C            NSECTS		EQU  CPMLEN/128		;NUMBER OF SECTORS IN IT.
+
+                        ;       Page Zero Definitions.
+      = 0003            IOBYTE		EQU	3		;Location of IOBYTE
+      = 0004            CDISK		EQU	4		;Location of current disk
+      = 0040            BIORAM		EQU	40h		;16 ram cells
+      = 0040            OPTS		EQU	BIORAM		;GBC DISK1 board switch options
+                        ;			BIORAM+1	;GBC (cell before TICK)
+      = 0042            TICK		EQU	BIORAM+2	;GBC Sample period
+      = 0080            DBUF		EQU	80h		;Default sector buffer
+
+EE00                    		ORG	BIOS
+
+                        ; I/O JUMP VECTOR
+                        ; THIS IS WHERE CP/M CALLS WHENEVER IT NEEDS
+                        ; TO DO ANY INPUT/OUTPUT OPERATION.
+                        ; USER PROGRAMS MAY USE THESE ENTRY POINTS
+                        ; ALSO, BUT NOTE THAT THE LOCATION OF THIS
+                        ; VECTOR CHANGES WITH THE MEMORY SIZE.
+                        ;
+EE00  C3 AFEE           CBOOTV	JP  	CBOOT	;FROM COLD START LOADER.
+EE03  C3 D3EE           WBOOTV	JP  	WBOOT	;FROM WARM BOOT.
+EE06  C3 3AEF           	JP  	CONST	;CHECK CONSOLE KB STATUS.
+EE09  C3 4EEF           	JP  	CONIN	;READ CONSOLE CHARACTER.
+EE0C  C3 68EF           	JP  	CONOT	;WRITE CONSOLE CHARACTER.
+EE0F  C3 92EF           	JP  	LIST	;WRITE LISTING CHAR.
+EE12  C3 93EF           	JP  	PUNCH	;WRITE PUNCH CHAR.
+EE15  C3 94EF           	JP  	READER	;READ READER CHAR.
+EE18  C3 B8EF           	JP  	HOME	;MOVE DISK TO TRACK ZERO.
+EE1B  C3 96EF           SELDSKV	JP  	SELDSK	;SELECT DISK DRIVE.
+EE1E  C3 BAEF           	JP  	SETTRK	;SEEK TO TRACK IN REG A.
+EE21  C3 C4EF           	JP  	SETSEC	;SET SECTOR NUMBER.
+EE24  C3 CEEF           SETDMAV	JP  	SETDMA	;SET DISK STARTING ADR.
+EE27  C3 D7EF           	JP  	DREAD	;READ SELECTED SECTOR.
+EE2A  C3 0CF0           	JP  	DWRITE	;WRITE SELECTED SECTOR.
+EE2D  C3 95EF           	JP  	LISTST	;List status (output)
+EE30  C3 D4EF           	JP  	SECTRN	;Translate sector number
+
+                        ;	Control Blocks for disk drives
+
+EE33  00000000 00000000 DPBASE	DW	0,0,0,0,DIRBUF,DPB0,CSV0,ALV0	;Drive A:
+EE3B  80F973EE 1FFA00FA
+EE43  00000000 00000000 	DW	0,0,0,0,DIRBUF,DPB1,CSV1,ALV1	;Drive B:
+EE4B  80F982EE 4EFA2FFA
+EE53  00000000 00000000 	DW	0,0,0,0,DIRBUF,DPB2,CSV2,ALV2	;Drive C:
+EE5B  80F9A0EE 7DFA5EFA
+EE63  00000000 00000000 	DW	0,0,0,0,DIRBUF,DPB3,CSV3,ALV3	;Drive D:
+EE6B  80F991EE ACFA8DFA
+
+      = 0004            NDSK	EQU	4
+
+
+                        ;       Disk type definition blocks for each particular mode.
+EE73  1A00              DPB0	DW	26		;SEC PER TRACK
+EE75  03                        DB	3		;BLOCK SHIFT
+EE76  07                        DB	7		;BLOCK MASK
+EE77  00                        DB	0		;EXTNT MASK
+EE78  F200                      DW	242		;DISK SIZE-1
+EE7A  3F00                      DW	63		;DIRECTORY MAX
+EE7C  C0                        DB	11000000b	;ALLOC0
+EE7D  00                        DB	00000000b	;ALLOC1
+EE7E  1000                      DW	16		;CHECK SIZE
+EE80  0200                      DW	2		;OFFSET
+
+EE82  1A00              DPB1	DW	26		;SEC PER TRACK
+EE84  03                        DB	3		;BLOCK SHIFT
+EE85  07                        DB	7		;BLOCK MASK
+EE86  00                        DB	0		;EXTNT MASK
+EE87  F200                      DW	242		;DISK SIZE-1
+EE89  3F00                      DW	63		;DIRECTORY MAX
+EE8B  C0                        DB	11000000b	;ALLOC0
+EE8C  00                        DB	00000000b	;ALLOC1
+EE8D  1000                      DW	16		;CHECK SIZE
+EE8F  0200                      DW	2		;OFFSET
+
+                        ;DEBUG swapped 2 <-> 3
+EE91  1A00              DPB3	DW	26		;SEC PER TRACK
+EE93  03                        DB	3		;BLOCK SHIFT
+EE94  07                        DB	7		;BLOCK MASK
+EE95  00                        DB	0		;EXTNT MASK
+EE96  F200                      DW	242		;DISK SIZE-1
+EE98  3F00                      DW	63		;DIRECTORY MAX
+EE9A  C0                        DB	11000000b	;ALLOC0
+EE9B  00                        DB	00000000b	;ALLOC1
+EE9C  1000                      DW	16		;CHECK SIZE
+EE9E  0200                      DW	2		;OFFSET
+
+EEA0  1A00              DPB2	DW	26		;SEC PER TRACK
+EEA2  03                        DB	3		;BLOCK SHIFT
+EEA3  07                        DB	7		;BLOCK MASK
+EEA4  00                        DB	0		;EXTNT MASK
+EEA5  F200                      DW	242		;DISK SIZE-1
+EEA7  3F00                      DW	63		;DIRECTORY MAX
+EEA9  C0                        DB	11000000b	;ALLOC0
+EEAA  00                        DB	00000000b	;ALLOC1
+EEAB  1000                      DW	16		;CHECK SIZE
+EEAD  0200                      DW	2		;OFFSET
+
+
+
+
+                        ;       B O O T   C P / M   f r o m   d i s k.
+                        ;
+                        ;       The CBOOT entry point gets control from the cold start
+                        ;       loader and is responsible for the basic system initial-
+                        ;       ization.  This includes outputting a sign-on message and
+                        ;       initializing the following page zero locations:
+                        ;
+                        ;          0,1,2: Set to the warmstart jump vector.
+                        ;              3: Set to the initial IOBYTE value.
+                        ;              4: Default and logged on drive.
+                        ;          5,6,7: Set to a jump to BDOS.
+                        ;             40: (Set by BOOT) Board switch options.
+                        ;
+                        ;       If BANG is true (DISK1 bit serial latch is to be supported), then
+                        ;       board switch option I means to use the BitBanger for console I/O.
+                        ;       Register C must contain the selected drive, which is zero to
+                        ;       select the A drive.  The exit address is to the CCP routine.
+                        ;
+                        ;
+                        ;       The WBOOT entry point gets control when a warm start occurs,
+                        ;       a ^C from the console, a jump to BDOS (function 0), or a jump to
+                        ;       location zero.  The WBOOT routine reads the CCP and BDOS from the
+                        ;       appropriate disk sectors.  WBOOT must also re-initialize locations
+                        ;       0,1,2 and 5,6,7.  The WBOOT routines exits with the C register set
+                        ;       to the appropriate drive selection value.  The exit address is to
+                        ;       the CCP routine.
+                        ;
+EEAF  31 40F9           CBOOT:	LD  SP,STACKTOP		;SET STACK POINTER.
+EEB2  CD 06F6           	CALL PRINTI
+EEB5  0D0A5A38 304D4320 	DB CR,LF,"Z80MC "
+EEBD  3631              	DB   (MSIZE / 10) + '0', (MSIZE % 10) + '0'
+EEBF  4B204350 2F4D2032 	DB "K CP/M 2.2",CR,LF,EOS
+EEC7  2E320D0A 00
+
+EECC  AF                        XOR     A
+EECD  32 0400                   LD     (CDISK), A           ;Force A drive
+EED0  32 0300                   LD     (IOBYTE), A          ;Clear I/O byte
+
+                        ; WARM-BOOT:  READ ALL OF CPM BACK IN
+                        ; EXCEPT BIOS, THEN JUMP TO CCP.
+                        ;
+EED3  31 40F9           WBOOT:	LD  	SP,STACKTOP		;SET STACK POINTER.
+                        	
+EED6  21 55F4           	LD	HL,CPM_BOOTER
+EED9  E5                	PUSH	HL
+
+EEDA  CD 30F1           	CALL	MAP_RAM
+
+EEDD  CD 06F6           	CALL PRINTI
+EEE0  0D0A5742 4F4F540D 	DB CR,LF,"WBOOT",CR,LF,EOS
+EEE8  0A00
+                        	
+                        				;Boot CP/M
+
+EEEA  3A 0400           	LD	A, (CDISK)	;SAVE DISK NUMBER.
+EEED  32 F5FA           	LD	(TEMP), A
+EEF0  0E 00             	LD	C,0	;Set DISK A
+EEF2  CD 1BEE           	CALL	SELDSKV
+
+EEF5  11 00D8           	LD	DE,CCP		;Save destination address
+EEF8  06 2C             	LD	B,NSECTS
+EEFA  21 0100           	LD	HL,1
+EEFD  22 F6FA           WBLP	LD	(DISK_LOG_SEC), HL	;Set first sector to read from disk
+EF00  C5                	PUSH	BC
+EF01  D5                	PUSH	DE
+EF02  CD D2F0           	CALL	DISK_READ	;HL = Quarter Buffer, BC=128
+EF05  D1                	POP	DE
+EF06  EDB0              	LDIR			;Copy the SD_RAM_BUFFER to CP/M
+EF08  2A F6FA           	LD	HL, (DISK_LOG_SEC)	;Set first sector to read from disk
+EF0B  23                	INC	HL
+EF0C  C1                	POP	BC
+EF0D  10 EE             	DJNZ	WBLP
+
+                        ; SET UP JUMPS IN CP/M PAGE ZERO.
+
+EF0F  01 8000           	LD  	BC,DBUF	;SET DEFAULT DMA ADR.
+EF12  CD 24EE           	CALL	SETDMAV
+EF15  3E C3             	LD	A,0C3H	;PUT JMP TO WBOOT
+EF17  32 0000           	LD	(0), A		;ADR AT ZERO.
+EF1A  32 0500           	LD	(5), A
+EF1D  21 03EE           	LD	HL,WBOOTV
+EF20  22 0100           	LD	(1), HL
+EF23  21 06E0           	LD	HL,BDOS	;PUT JUMP TO BDOS
+EF26  22 0600           	LD	(6), HL		;AT ADR 5,6,7.
+EF29  AF                	XOR	A
+EF2A  32 0300           	LD	(3),A
+EF2D  32 0400           	LD	(4),A
+                        	
+EF30  3A F5FA           	LD  A, (TEMP)
+EF33  32 0400           	LD  (CDISK), A
+EF36  4F                	LD  C,A
+                        		
+EF37  C3 00D8           	JP  CCP             ;Go to CPM
+
+
+                        ;===============================================
+                        ;       C O N S O L   S T A T U S
+                        ;
+                        ;       This routine samples the Console status and
+                        ;       returns the following values in the A register.
+                        ;
+                        ;       EXIT    A = 0 (zero), means no character
+                        ;               currently ready to read.
+                        ;
+                        ;               A = FFh (255), means character
+                        ;               currently ready to read.
+                        ;-----------------------------------------------
+EF3A  ED73 FAFA         CONST:	LD	(SP_SAVE),SP
+EF3E  31 80F9           	LD	SP,STACK_TEMP
+EF41  CD 17F6           	CALL	RX_COUNT
+EF44  B7                	OR	A
+EF45  28 02             	JR Z,	CONST_RET
+EF47  F6 FF             	OR	0FFH
+EF49                    CONST_RET
+EF49  ED7B FAFA         	LD	SP,(SP_SAVE)
+EF4D  C9                	RET		;10
+
+
+                        ;===============================================
+                        ;       C O N S O L   I N P U T
+                        ;
+                        ;       Read the next character into the A register, clearing the high
+                        ;       order bit.  If no character currently ready to read then wait
+                        ;       for a character to arrive before returning.
+                        ;
+                        ;       EXIT    A = character read from terminal.
+                        ;-----------------------------------------------
+EF4E  ED73 FAFA         CONIN:	LD	(SP_SAVE),SP
+EF52  31 80F9           	LD	SP,STACK_TEMP	
+EF55  CD 09F1           CILP	CALL	IN_CHAR	;Get Char No Echo
+EF58  38 FB             	JR C,	CILP
+EF5A  E6 7F             	AND	7FH	;MAKE MOST SIG. BIT = 0.
+EF5C  FE 7F             	CP	7FH	;IS IT A RUBOUT?
+EF5E  20 03             	JR NZ,	CONIN_RET	;RETURN IF NOT.
+EF60  32 EBFA           	LD	(CONOTF), A	;SET NO PRINT FLAG.
+EF63                    CONIN_RET
+EF63  ED7B FAFA         	LD	SP,(SP_SAVE)
+EF67  C9                	RET		;RETURN FROM CONIN.
+                        	
+                        ;===============================================
+                        ;       C O N S O L   O U T P U T
+                        ;
+                        ;       Send a character to the console.  If the console is not ready to
+                        ;       receive a character wait until the console is ready.
+                        ;
+                        ;       ENTRY   C = ASCII character to output to console.
+                        ;-----------------------------------------------
+EF68  ED73 FAFA         CONOT:	LD	(SP_SAVE),SP
+EF6C  31 80F9           	LD	SP,STACK_TEMP		
+EF6F  79                	LD  	A,C		;GET CHARACTER.
+EF70  FE 7F             	CP  	7FH		;IS IT A RUBOUT?
+EF72  28 19             	JR Z,	CONOT_RET	;IF SO, DON'T PRINT IT.
+EF74  3A EBFA           	LD  	A, (CONOTF)	;GET NO PRINT FLAG.
+EF77  B7                	OR  	A		;SET CPU FLAGS.
+EF78  CA 89EF           	JP Z,   CONOTA		;NOT SET, SO PRINT.
+EF7B  AF                	XOR  	A		;RESET THE FLAG
+EF7C  32 EBFA           	LD  	(CONOTF), A	;TO ZERO.
+EF7F  0E 08             	LD  	C,8		;PRINT BACKSPACE.
+EF81  CD 89EF           	CALL 	CONOTA
+EF84  3E 20             	LD  	A,' '		;PRINT SPACE.
+EF86  CD F9F0           	CALL 	PUT_CHAR
+                        				;ANOTHER BACKSPACE.
+EF89  79                CONOTA:	LD  	A,C		;GET CHARACTER.
+EF8A  CD F9F0           	CALL 	PUT_CHAR	;PRINT IT.
+EF8D                    CONOT_RET
+EF8D  ED7B FAFA         	LD	SP,(SP_SAVE)
+EF91  C9                	RET			;RETURN.
+
+
+                        	
+                        	
+
+                        ;
+                        ; WRITE A CHARACTER ON LISTING DEVICE.
+                        ;
+EF92                    LIST:
+
+EF92                    LTBSY	
+EF92  C9                	RET		;RETURN FROM LIST.
+
+
+                        ;
+                        ; PUNCH PAPER TAPE.
+                        ;
+EF93  C9                PUNCH:	RET		;RETURN FROM PUNCH.
+
+                        ;
+                        ;  NORMALLY USED TO READ PAPER TAPE.
+                        ;
+EF94  C9                READER:	RET		;RETURN FROM READER.
+
+EF95  C9                LISTST	RET
+
+
+                        ;       S E L E C T   D I S K   D R I V E
+                        ;
+                        ;       Select the disk drive for subsequent disk transfers and
+                        ;       return the appropriate DPH address.
+                        ;
+                        ;       ENTRY   C = disk delection value.
+                        ;
+                        ;       EXIT    HL = 0, if drive not selectable.
+                        ;               HL = DPH address if drive is selectable.
+                        ;
+EF96  ED73 FAFA         SELDSK:	LD	(SP_SAVE),SP
+EF9A  31 80F9           	LD	SP,STACK_TEMP		
+EF9D  21 0000           	LD	HL,0
+EFA0  79                	LD	A,C	;GET NEW DISK NUMBER.
+EFA1  FE 04             	CP	NDSK
+EFA3  30 0E             	JR NC,	SELDSK_RET	;If Disk invalid...EXIT
+
+EFA5  CD 6BF0           	CALL SET_FCB_PTR ;Set the FCB PTR for the correct SD File & HL = DPBASE[A] + 10 (pointer to DPT)
+                        			 ;Set DPH_PTR for DPBASE[A] (or 0000 if drive not exist)
+
+EFA8  CD 19F1           	CALL	ROM_SUB	
+EFAB  8F00              	DW	VLD_HL_HL
+EFAD  22 F0FA           	LD	(SEC_PER_TRACK),HL
+EFB0  2A F8FA           	LD	HL,(DPH_PTR)
+
+EFB3                    SELDSK_RET
+
+
+                        	;CALL PRINTI		;DEBUG
+                        	;DB "SLD:",EOS
+                        	;CALL PUT_HL
+                        	;XOR  A		;SET A = 0.
+                        	
+EFB3  ED7B FAFA         	LD	SP,(SP_SAVE)
+EFB7  C9                	RET		;RETURN FROM SELDSK.
+
+
+                        ; MOVE DISK TO TRACK ZERO.
+                        ;
+EFB8  0E 00             HOME:	LD  C,0	;SEEK TO TRACK ZERO.
+                        ;
+                        ; SET TRACK NUMBER TO WHATEVER IS IN REGISTER C.
+                        ; ALSO PERFORM MOVE TO THE CORRECT TRACK (SEEK).
+                        ;
+EFBA  79                SETTRK:	LD  A,C		;GET NEW TRACK NUMBER.
+EFBB  32 ECFA           	LD  (TRK), A	;UPDATE OLD WITH NEW.
+EFBE  78                	LD  A,B		;
+EFBF  32 EDFA           	LD  (TRK+1), A	;
+
+                        ; MOVE THE HEAD TO THE TRACK IN REGISTER A.
+                        ;
+EFC2  AF                	XOR  A		;Clear flags
+EFC3  C9                	RET		;RETURN FROM SEEK.
+
+                        ;
+                        ; SET DISK SECTOR NUMBER.
+                        ;
+EFC4  79                SETSEC:	LD  A,C		;GET SECTOR NUMBER.
+EFC5  32 EEFA           	LD  (SECT), A	;PUT AT SECT # ADDRESS.
+EFC8  78                	LD  A,B		;
+EFC9  32 EFFA           	LD  (SECT+1), A	;
+EFCC  AF                	XOR  A		;Clear flags
+EFCD  C9                	RET		;RETURN FROM SETSEC.
+                        ;
+                        ; SET DISK DMA ADDRESS.
+                        ;
+EFCE  60                SETDMA:	LD  H,B		;MOVE B&C TO H&L.
+EFCF  69                	LD  L,C
+EFD0  22 F2FA           	LD (DMAADD), HL	;PUT AT DMA ADR ADDRESS.
+EFD3  C9                	RET		;RETURN FROM SETDMA.
+
+
+                        ;       Translate sector number from logical to physical.
+                        ;
+                        ;       ENTRY   DE = 0, no translation required.
+                        ;               DE = translation table address.
+                        ;               BC = sector number to translate.
+                        ;
+                        ;       EXIT    HL = translated sector.
+
+EFD4                    SECTRN:	;EX	DE,HL
+                        	;ADD	HL,BC
+                        	;RET
+                        	
+EFD4  69                	LD     L,C	;No Translation
+EFD5  60                        LD     H,B
+EFD6  C9                        RET
+
+                        ;
+                        ; READ THE SECTOR AT SECT, FROM THE PRESENT DISK/TRACK/SSECT.
+                        ; USE STARTING ADDRESS AT DMAADD.
+                        ;
+EFD7  ED73 FAFA         DREAD:	LD	(SP_SAVE),SP
+EFDB  31 80F9           	LD	SP,STACK_TEMP
+EFDE  E5                	PUSH	HL
+EFDF  C5                	PUSH	BC
+EFE0  D5                	PUSH	DE
+EFE1  CD 35F0           	CALL 	GETLOG	;Fetch Logical FSector of requested read
+EFE4  C2 F3EF           	JP NZ,	DREADE
+                        	
+EFE7  CD D2F0           	CALL	DISK_READ	;HL = Quarter Buffer, BC=128
+EFEA  ED5B F2FA         	LD	DE, (DMAADD)	;Destination, CP/M Data Buffer
+                        	;LD	BC,128
+EFEE  EDB0              	LDIR		;Copy the SD_RAM_BUFFER to CP/M DMAADD
+EFF0  AF                	XOR  A		;SET FLAGS.
+EFF1  18 11             	JR	DREADX
+
+EFF3  CD 06F6           DREADE	CALL	PRINTI
+EFF6  52454144 2D455252 	DB	"READ-ERROR",EOS
+EFFE  4F5200
+F001  3E 01             	LD	A,1	;ERROR
+F003  B7                	OR	A
+                        	
+F004  D1                DREADX	POP	DE
+F005  C1                	POP	BC
+F006  E1                	POP	HL
+F007  ED7B FAFA         	LD	SP,(SP_SAVE)
+F00B  C9                	RET
+
+
+                        ;
+                        ; WRITE THE SECTOR AT SECT, ON THE PRESENT TRACK.
+                        ; USE STARTING ADDRESS AT DMAADD.
+                        ;
+F00C  ED73 FAFA         DWRITE:	LD	(SP_SAVE),SP
+F010  31 80F9           	LD	SP,STACK_TEMP
+F013  E5                	PUSH	HL
+F014  F5                	PUSH	AF
+F015  C5                	PUSH	BC
+F016  D5                	PUSH	DE
+F017  CD 35F0           	CALL 	GETLOG	;Fetch Logical FSector of requested write
+F01A  C2 F3EF           	JP NZ,	DREADE
+                        			;DISK_READ will find the right Cluster/File sector *AND* Flush any previous writes.
+                        			
+F01D  CD D2F0           	CALL	DISK_READ	;HL = Quarter Buffer, BC=128
+F020  EB                	EX	DE, HL	
+F021  2A F2FA           	LD	HL, (DMAADD)		;Source, CP/M Data Buffer
+                        	;LD	BC,128
+F024  EDB0              	LDIR		;Copy the SD_RAM_BUFFER to CP/M DMAADD
+F026  3E FF             	LD	A,0FFH
+F028  32 0FFF           	LD	(DIRTY_DATA), A
+F02B  D1                	POP	DE
+F02C  C1                	POP	BC
+F02D  F1                	POP	AF
+F02E  AF                	XOR	A		;SET FLAGS.
+F02F  E1                	POP	HL
+F030  ED7B FAFA         	LD	SP,(SP_SAVE)
+F034  C9                	RET
+                        	
+
+                        ; Return Logical Disk Sector based on TRACK and SECTOR
+                        ; Fixed to 26 Sectors per track
+                        ; Track starts at 0 for first track
+                        ; Sector starts at 0 for first sector
+                        ;
+F035  ED4B F0FA         GETLOG		LD	BC,(SEC_PER_TRACK)
+F039  ED5B ECFA         		LD	DE,(TRK)
+F03D  21 0000           		LD	HL,0			;DE=TRACK#, BC = SEC_PER_TRACK, HL = 0 = RESULT
+                        		
+F040  78                MULT_LOOP	LD	A,B
+F041  B1                		OR	C
+F042  CA 5CF0           		JP  Z,	MULT_DONE
+F045  CB38              		SRL	B			;Shift BC right
+F047  CB19              		RR	C
+F049  D2 50F0           		JP  NC,	MULT_SKIP
+F04C  19                		ADD	HL,DE
+F04D  DA 68F0           		JP  C,	MULT_OVRF		;
+F050  EB                MULT_SKIP	EX	DE,HL
+F051  29                		ADD	HL,HL			;SHIFT HL UP
+F052  EB                		EX	DE,HL
+F053  D2 40F0           		JP  NC,	MULT_LOOP		;
+F056  11 FFFF           		LD	DE,0xFFFF
+F059  C3 40F0           		JP	MULT_LOOP
+                        	
+F05C  ED5B EEFA         MULT_DONE	LD	DE,(SECT)
+F060  19                		ADD	HL,DE			;HL= TRK * SPT + SECT
+F061  DA 68F0           		JP  C,	MULT_OVRF		;
+F064  22 F6FA           		LD	(DISK_LOG_SEC), HL
+F067  C9                		RET				;Z=1 if successful
+                        		
+F068  AF                MULT_OVRF	XOR	A
+F069  3D                		DEC	A			;Z=0 if overflow
+F06A  C9                		RET
+
+
+
+
+
+
+                        ;----------------------------------------------------------------------------------------------------; FLOPPY DISK BIOS
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;----------------------------------------------------------------------------------------------------; FLOPPY DISK BIOS
+
+
+
+
+                        ;SDFCB:
+      = 0000            FSTAT		EQU	0	;BLOCK	1	;+0  Status of FCB, 00=File Not Open
+      = 0001            FNAME		EQU	1	;BLOCK	11	;+1  File name
+      = 000C            AFClus0		EQU	12	;BLOCK	2	;+12 First Cluster of File as given by the Directory Entry.
+      = 000E            CRFClus		EQU	14	;BLOCK	2	;+14 Current Relative Cluster location in file, (0 to F for a system with 32 Sectors per Cluster)
+      = 0010            CAFClus		EQU	16	;BLOCK	2	;+16 Current Absolute Cluster location in file, set to AFClus0, then updated with FAT
+      = 0012            RFSec		EQU	18	;BLOCK	2	;+18 Relative Sector being addressed (0 to 500, based 26 sectors per track and 77 tracks Divide by 4)
+      = 0014            SSOC		EQU	20	;BLOCK	4	;+20 Starting Sector of Cluster, this is the first Sector for that Cluster
+      = 0018            ABS_SEC		EQU	24	;BLOCK	4	;+24 Absolute Sector of Current Relative Sector
+
+
+
+                        ;=====================================================================================================
+                        ;Set FCB Pointer to one of 4 FCB blocks
+                        ;=====================================================================================================
+F06B  C5                SET_FCB_PTR	PUSH	BC
+F06C  E6 03             		AND	03H		;Limit & Clear Carry
+F06E  0F                		RRCA			;Set A x 32 to offset into correct FCB
+F06F  0F                		RRCA			;(Rotating 3 Right is faster than 5 Left)
+F070  0F                		RRCA
+F071  4F                		LD	C,A
+F072  06 00             		LD	B,0
+F074  21 80FB           		LD	HL,SDISKA	;HL = Base Address of FCB's
+F077  09                		ADD	HL,BC		;HL = FCB[A]   'Add offset x 32
+F078  22 08FF           		LD	(FCB_PTR), HL
+F07B  0F                		RRCA			;Set A x 16
+F07C  4F                		LD	C,A
+F07D  7E                		LD	A,(HL)		;Fetch FCB FSTAT (Is File OPEN / Exist)
+F07E  21 0000           		LD	HL,0		;HL = 0000 File (disk) not ready
+F081  22 F8FA           		LD	(DPH_PTR), HL
+F084  B7                		OR	A
+F085  28 11             		JR Z,	SFPE
+F087  21 33EE           		LD	HL,DPBASE	;HL = Base Address of Drive Parameter Header
+F08A  09                		ADD	HL,BC		;HL = DPH[A]   'Add offset x 16
+F08B  22 F8FA           		LD	(DPH_PTR), HL
+F08E  0E 0A             		LD	C,10
+F090  09                		ADD	HL,BC		;HL = Address of DPT Pointer (@DPH[A] + 10)
+F091  CD 19F1           		CALL	ROM_SUB
+F094  8F00              		DW	VLD_HL_HL
+F096  C1                		POP	BC
+F097  C9                		RET
+
+F098  CD 06F6           SFPE		CALL	PRINTI
+F09B  2046494C 45204E4F 		DB " FILE NOT OPENED",EOS
+F0A3  54204F50 454E4544
+F0AB  00
+F0AC  C1                		POP	BC
+F0AD  C9                		RET
+
+F0AE  01 0300           		LD	BC,0x0003
+F0B1  11 00E9           		LD	DE,0xE900	;3E900h = 256,256 = 26 * 77 * 128 (Size of a disk)
+                        ;		CALL	CMP_HL_32	;Compare Dword
+F0B4  C2 B7F0           		JP NZ,	SDO_FSERR
+F0B7  CD 06F6           SDO_FSERR	CALL	PRINTI
+F0BA  202D4649 4C452053 		DB " -FILE SIZE NOT 256256",EOS
+F0C2  495A4520 4E4F5420
+F0CA  32353632 353600
+F0D1  C9                		RET
+
+
+                        ;----------------------------------------------------------------------------------------------------; ROM BIOS
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;----------------------------------------------------------------------------------------------------; ROM BIOS
+
+
+
+F0D2  2A F6FA           DISK_READ	LD	HL,(DISK_LOG_SEC)
+F0D5  CB3C              		SRL	H		;Rotate HL right 2 times
+F0D7  CB1D              		RR	L
+F0D9  CB3C              		SRL	H
+F0DB  CB1D              		RR	L
+F0DD  22 0DFF           		LD	(LOGICAL_SEC),HL
+                        				
+F0E0  CD 3AF1           		CALL	MAP_ROM
+F0E3  CD EC00           		CALL	VDISK_READ
+F0E6  CD 30F1           		CALL	MAP_RAM
+
+                        ;--------- Set HL to the 128 byte Quarter Buffer of SD_RAM_BUFFER
+F0E9  01 8000           SET_QUARTER	LD	BC,128		;Preset Length of copy = 128 Bytes
+F0EC  21 00FC           		LD	HL,SD_RAM_BUFFER
+F0EF  3A F6FA           		LD	A,(DISK_LOG_SEC);Fetch sector to be read (lsb)
+F0F2  1F                		RRA			;Adjust H to correct LSector of 128 Bytes
+F0F3  CB1D              		RR	L
+F0F5  1F                		RRA
+F0F6  D0                		RET	NC
+F0F7  24                		INC	H
+F0F8  C9                		RET
+
+F0F9  CD 3AF1           PUT_CHAR	CALL	MAP_ROM
+F0FC  CD 4500           		CALL	VPUT_CHAR
+F0FF  18 2F             		JR	MAP_RAM
+
+F101  CD 3AF1           GET_CHAR	CALL	MAP_ROM
+F104  CD 4B00           		CALL	VGET_CHAR
+F107  18 27             		JR	MAP_RAM
+
+F109  CD 3AF1           IN_CHAR		CALL	MAP_ROM
+F10C  CD 5100           		CALL	VIN_CHAR
+F10F  18 1F             		JR	MAP_RAM
+
+F111  CD 3AF1           SD_READ_SEC	CALL	MAP_ROM
+F114  CD EF00           		CALL	VSD_READ_SEC
+F117  18 17             		JR	MAP_RAM
+
+
+                        ;		CALL	ROM_SUB
+                        ;		DW	PUT_CHAR
+                        ;
+                        ;	Stack must be in upper 32K of RAM (not banked switched)
+F119  E3                ROM_SUB		EX	(SP),HL		;Fetch PC
+F11A  F5                		PUSH	AF
+F11B  7E                		LD	A,(HL)
+F11C  32 2EF1           		LD	(RSCA_L),A
+F11F  23                		INC	HL
+F120  7E                		LD	A,(HL)
+F121  32 2FF1           		LD	(RSCA_H),A
+F124  23                		INC	HL
+F125  AF                		XOR	A	;MAP ROM
+F126  32 D9FF           		LD	(RRSTATE),A
+F129  D3 C1             		OUT	(RAMROM),A
+F12B  F1                		POP	AF
+F12C  E3                		EX	(SP),HL		;Return PC+2 to stack
+F12D  CD                		DB	0xCD		;Self modifying code for N-Way CALLS
+F12E  00                RSCA_L		DB	0
+F12F  00                RSCA_H		DB	0		;CALL RETURN FALLS INTO MAP_RAM
+                        		
+F130  F5                MAP_RAM		PUSH	AF		;Port will switch the 32K RAM from the middle card to 0-32K
+F131  3E 01             		LD	A,1
+F133  32 D9FF           		LD	(RRSTATE),A
+F136  D3 C1             		OUT	(RAMROM),A
+F138  F1                		POP	AF
+F139  C9                		RET
+
+F13A  F5                MAP_ROM		PUSH	AF
+F13B  AF                		XOR	A
+F13C  32 D9FF           		LD	(RRSTATE),A
+F13F  D3 C1             		OUT	(RAMROM),A
+F141  F1                		POP	AF
+F142  C9                		RET
+
+                        		
+
+                        ;----------------------------------------------------------------------------------------------------; RAM SPACE
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;----------------------------------------------------------------------------------------------------; RAM SPACE
+F900                    		ORG	F900H
+F900   (0040)           STACKNORM	DS	64
+      = F940            STACKTOP	EQU	$	;Stack starts saveing at FCFFh and grows downward
+
+F940   (0040)           STACK_TEMPRAM	DS	64
+      = F980            STACK_TEMP	EQU	$	;Stack starts saveing at FCFFh and grows downward
+                        		;DEFINE RAM AREAS FOR BDOS OPERATION
+F980   (0080)           DIRBUF	DS	128
+FA00   (001F)           ALV0	DS	31
+FA1F   (0010)           CSV0	DS	16
+FA2F   (001F)           ALV1	DS	31
+FA4E   (0010)           CSV1	DS	16
+FA5E   (001F)           ALV2	DS	31	;DEBUG swapped 2 <-> 3	
+FA7D   (0010)           CSV2	DS	16
+FA8D   (001F)           ALV3	DS	31	;DEBUG swapped 2 <-> 3	
+FAAC   (0010)           CSV3	DS	16
+
+FABC   (0001)           WTF	DS	1
+
+
+                        ; SPECIAL FLAGS.
+
+
+
+FAEB                    		ORG	FAEBH
+FAEB   (0001)           CONOTF		DS	1	;NO-PRINT FLAG (WHEN FF).
+
+                        ; BIOS SCRATCH AREA.
+                        ;
+FAEC   (0002)           TRK:		DS	2	;CURRENT TRACK NUMBER.
+FAEE   (0002)           SECT:		DS	2	;CURRENT SECTOR NUMBER.
+FAF0   (0002)           SEC_PER_TRACK	DS	2	;SECTORS PER TRACK
+FAF2   (0002)           DMAADD:		DS	2	;DISK TRANSFER ADDRESS.
+FAF4   (0001)           DISKNO:		DS	1	;DISK NUMBER (TO CP/M).
+FAF5   (0001)           TEMP:		DS	1	;TEMPORARY STORAGE.
+FAF6   (0002)           DISK_LOG_SEC	DS	2	;Logical Disk Sector  (Input paramater for the File Read)
+FAF8   (0002)           DPH_PTR		DS	2	;Pointer to Drive Paramaeter Header
+
+FAFA   (0002)           SP_SAVE		DS	2	;
+
+FA00                    		ORG	0xFA00
+                        ;This RAM space overwrites DIRBUF space, but that is ok as it's used in the disk setup prior to booting CP/M
+                        ;This RAM space is used by LINE_INPUT and must never be called when CP/M is running.
+FA00   (0080)           LINE_BUFF	DS	128	
+FA80   (0001)           LINE_BUFFEND	DS	1	
+FA81   (0004)           GL_FILESIZE	DS	4	
+FA85   (0002)           GL_DBP		DS	2
+
+FB00                    		ORG	0xFB00
+FB00   (0080)           RESV1		DS	128	;Reserved for BASE SYSTEM
+
+FB80                    		ORG	0xFB80
+                        ;SDFCB:
+      = 0000            FSTAT		EQU	0	;DS  1	;+0  Status of FCB, 00=File Not Open, 01=File Opened, 80=EOF (Line_Input)
+      = 0001            FNAME		EQU	1	;DS 11	;+1  File name
+      = 000C            AFClus0		EQU	12	;DS  2	;+12 First Cluster of File as given by the Directory Entry.
+      = 000E            CRFClus		EQU	14	;DS  2	;+14 Current Relative Cluster location in file, (0 to F for a system with 32 Sectors per Cluster)
+      = 0010            CAFClus		EQU	16	;DS  2	;+16 Current Absolute Cluster location in file, set to AFClus0, then updated with FAT
+      = 0012            RFSec		EQU	18	;DS  2	;+18 Relative Sector being addressed (0 to 500, based 26 sectors per track and 77 tracks Divide by 4)
+      = 0014            SSOC		EQU	20	;DS  4	;+20 Starting Sector of Cluster, this is the first Sector for that Cluster
+      = 0018            ABS_SEC		EQU	24	;DS  4	;+24 Absolute Sector of Current Relative Sector
+      = 001C            FSIZE		EQU	28	;DS  4	;+28 File Size of file (not used, just kept for completness)
+
+                        ;Warning: FCB's must never cross page boundaries.
+FB80   (0020)           SDISKA		DS	32	;File Control Block	;No FCB must cross a page boundary (simple 8 bit addition used for offseting into struct.)
+FBA0   (0020)           SDISKB		DS	32	;File Control Block	;No FCB must cross a page boundary (simple 8 bit addition used for offseting into struct.)
+FBC0   (0020)           SDISKC		DS	32	;File Control Block	;No FCB must cross a page boundary (simple 8 bit addition used for offseting into struct.)
+FBE0   (0020)           SDISKD		DS	32	;File Control Block	;No FCB must cross a page boundary (simple 8 bit addition used for offseting into struct.)
+
+                        ;
+                        ;  ********   **     **  *********  *********  *********  ********
+                        ;  *********  **     **  *********  *********  *********  *********
+                        ;  **     **  **     **  **         **         **         **     **
+                        ;  **     **  **     **  **         **         **         **     **
+                        ;  ********   **     **  *******    *******    *******    ********
+                        ;  ********   **     **  *******    *******    *******    ********
+                        ;  **     **  **     **  **         **         **         **  **
+                        ;  **     **  **     **  **         **         **         **   **
+                        ;  *********  *********  **         **         *********  **    **
+                        ;  ********    *******   **         **         *********  **     **
+                        ;
+FC00                    		ORG	0xFC00
+FC00   (0200)           SD_RAM_BUFFER	DS	512	;FC00-FDFF 512 bytes of SD Sector Buffer space
+
+FE00   (0100)           RXBUFFER	DS	256	;FExx      256 bytes of RX Buffer space
+                        ;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+                        ;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+                        ;- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+FF00                    		ORG	0xFF00
+FF00   (0008)           BIT_TABLE	DS	8
+
+                        ;Warning: FCB's must never cross page boundaries.
+FF08   (0002)           FCB_PTR		DS	2	;Pointer to Current FCB
+                        				;WARNING FOLLOWING RAM must match BASE ROM RAM Definitions
+      = FF0A            FAT_CLEAR	EQU	$	;Clear bytes of RAM after this point on FAT_INIT
+FF0A   (0002)           GH_START	DS	2	;HEX File, start address
+FF0C   (0001)           VIEW_FLAGS	DS	1	;View File Load;  File Open View
+                        				;BIT .0=View HEX Load, display file while reading HEX file
+                        				;    .1=GH_START Address has been set
+                        				;    .6=View FILE SIZE during File Open
+                        				;    .7=View File Name & Found or Not status durin File Open
+
+FF0D   (0002)           LOGICAL_SEC	DS	2	;Logical Sector for next Read Operation (Input paramater for the File Read)
+
+FF0F   (0001)           DIRTY_DATA	DS	1	;Indicates when data Read has been altered, ie. Requires flushing back to SD Card
+FF10   (0001)           SD_CARD_TYPE	DS	1	;SD CARD TYPE
+FF11   (0001)           SDC_STATUS	DS	1	;SD Status Code returned
+FF12   (0004)           SD_PARAM	DS	4	;32 bit address parameter for SD Commands
+FF16   (0001)           SD_PART_TYPE	DS	1	;SD PARTITION TYPE
+FF17   (0004)           SD_PART_BASE	DS	4	;SD PARTITION STARTING RECORD
+FF1B   (0004)           SD_PART_SIZE	DS	4	;SD PARTITION SIZE (Must follow SD_PART_BASE)
+FF1F   (0002)           BYTE_P_SEC	DS	2	;0x0B Bytes per Sector (Almost always 512)
+FF21   (0001)           SEC_PER_CLUS	DS	1	;0x0D
+FF22   (0002)           RESERVED_SEC	DS	2	;0x0E - 0x0F
+FF24   (0001)           FAT_COPIES	DS	1	;0x10
+FF25   (0002)           ROOTDIR_SIZE	DS	2	;0x11 - 0x12
+FF27   (0004)           FILESYS_SEC	DS	4	;0x13 - 0x14 or 0x20 - 0x23
+FF2B   (0004)           HIDDEN_SEC	DS	4	;0x1C - 0x1F
+FF2F   (0002)           SEC_PER_FAT	DS	2	;0x16 - 0x17
+FF31   (0004)           FAT1START	DS	4	;Calculated Sector to FAT1
+FF35   (0004)           DIR_SECTOR	DS	4	;Calculated Sector to Root Directory
+FF39   (0004)           DATASTART	DS	4	;Calculated Sector to Data Area
+FF3D   (0004)           SEC_PTR		DS	4	;Sector Pointer, general use variable that holds the last sector read
+FF41   (0002)           ENT_COUNT	DS	2	;Directory Entry Counter, Counts down maximum directory entries in Find File
+      = 0039            FAT_CLR_LEN	EQU	$ - FAT_CLEAR
+FF43   (0008)           FILENAME	DS	8	;File Name
+FF4B   (0003)           FILEEXT		DS	3	;File Extension
+FF4E   (0004)           FILESIZE	DS	4	;File Size
+
+
+FF52   (0002)           DIVIDE_FUNC	DS	2	;Pointer to the Divide Function
+FF54   (0001)           DF_SHIFTCNT	DS	1	;Count of shifts required for Fast Divide
+FF55   (0001)           MUL8		DS	1	;8 bit multiplier
+FF56   (0002)           MOD_FUNC	DS	2	;Pointer to the Mod Function
+FF58   (0001)           MODMASK		DS	1	;8 bit mask to get Relative Sector within a cluster from a Relative File sector
+
+FF59   (0001)           IK_HEXL		DS	1	;IMON HEX INPUT
+FF5A   (0001)           IK_HEXH		DS	1	;IMON HEX INPUT
+FF5B   (0002)           HEX_SOURCE	DS	2	;Pointer to the HEX INPUT Source (FILE or Serial Port)
+
+                        	IF $ >= 0xFF78
+                        	ENDIF
+
+                        ;*** BEGIN COLD_BOOT_INIT (RAM that is to be initialized upon COLD BOOT) ***
+      = FF78            RAMSIGNATURE	equ	0xFF78	;RAM signature
+                        				;Following bytes are cleared on COLD BOOT
+      = FF80            RC_TYPE		equ	0xFF80	;(1) Type of Reset (WARNING, Next 7 RC counters must end with lsb bits = 001,010,011,100,101,110,111)
+      = FF81            RC_SOFT		equ	0xFF81	;(1) Count of Resets by SOFT F-E SWITCH
+      = FF82            RC_STEP		equ	0xFF82	;(1) Count of Resets by SINGLE STEP
+      = FF83            RC_CC		equ	0xFF83	;(1) Count of Resets by CTRL-C
+      = FF84            RC_HALT		equ	0xFF84	;(1) Count of Resets by HALT INSTRUCTION
+      = FF85            RC_F0		equ	0xFF85	;(1) Count of Resets by pressing F & 0 keys
+      = FF86            RC_RST0		equ	0xFF86	;(1) Count of Resets by RST 0 INSTRUCTION
+      = FF87            RC_HARD		equ	0xFF87	;(1) Count of Resets by UNKNOWN RESET LINE
+
+      = FF88            ABUSS		equ	0xFF88	;(2)
+      = FF8A            RegPtr		equ	0xFF8A	;(1) Ptr to Registers
+      = FF8B            IoPtr		equ	0xFF8B	;(1)  I/O Ptr
+      = FF8C            RX_ERR_LDRT	equ	0xFF8C	;(1) Counts False Start Bits (Noise Flag)
+      = FF8D            RX_ERR_STOP	equ	0xFF8D	;(1) Counts Missing Stop Bits (Framing Error)
+      = FF8E            RX_ERR_OVR	equ	0xFF8E	;(1) Counts Overrun Errors
+
+      = 000F            CS_CLR_LEN	equ	0xFF8F-RC_TYPE
+
+      = FF8F            ACE_BAUD	equ	0xFF8F	;(1) Baudrate of ACE, 12=9600
+
+      = FF90            PUTCHAR_EXE	equ	0xFF90	;(2) PutChar Execution (Set for PC_LED, PC_BIT, PC_ACE or PC_BOTH)
+      = FF92            INCHAR_EXE	equ	0xFF92	;(2) InChar Execution (Set for IN_KEY, IN_BIT, IN_ACE or IN_BOTH)
+                        ;*** END COLD_BOOT_INIT (RAM that is to be initialized upon COLD BOOT) ***
+
+      = FF94            HW_SETIO	equ	0xFF94
+      = FF95            HW_LIST		equ	0xFF95	;Hardware List, 00 NO FP, 01=FP Only, 02 SIO only, 03 FP & SIO
+
+                        				;Saved Registers
+      = FF96            RSSP		equ	0xFF96	;Value of SP upon REGISTER SAVE
+      = FF98            RSAF		equ	0xFF98	;Value of AF upon REGISTER SAVE
+      = FF9A            RSBC		equ	0xFF9A	;Value of BC upon REGISTER SAVE
+      = FF9C            RSDE		equ	0xFF9C	;Value of DE upon REGISTER SAVE
+      = FF9E            RSHL		equ	0xFF9E	;Value of HL upon REGISTER SAVE
+      = FFA0            RPC		equ	0xFFA0	;Value of PC upon REGISTER SAVE
+      = FFA2            RSIX		equ	0xFFA2	;Value of IX upon REGISTER SAVE
+      = FFA4            RSIY		equ	0xFFA4	;Value of IY upon REGISTER SAVE
+      = FFA6            RSIR		equ	0xFFA6	;Value of IR upon REGISTER SAVE
+      = FFA8            RSAF2		equ	0xFFA8	;Value of AF' upon REGISTER SAVE
+      = FFAA            RSBC2		equ	0xFFAA	;Value of BC' upon REGISTER SAVE
+      = FFAC            RSDE2		equ	0xFFAC	;Value of DE' upon REGISTER SAVE
+      = FFAE            RSHL2		equ	0xFFAE	;Value of HL' upon REGISTER SAVE
+
+      = FFB0            UiVec		equ	0xFFB0	;(2) User Interrupt Vector
+
+
+                        ;*** BEGIN WARM_BOOT_INIT (RAM that is to be initialized on every boot) ***
+                        				;WARNING, Following 34 bytes must be consecutive in this order for Block Write
+      = FFB2            BEEP_TO		equ	0xFFB2	;(1) Count down the beep (beep duration)
+      = FFB3            ANBAR_DEF	equ	0xFFB3	;(1) Base setting for the Annunciator LED's (after current function times out)
+      = FFB4            GET_REG		equ	0xFFB4	;(2) Get Reg Routine (in monitor mode, registers fetched from RAM)
+      = FFB6            PUT_REG		equ	0xFFB6	;(2) Put Reg Routine
+      = FFB8            CTRL_C_CHK	equ	0xFFB8	;(2) Vector for CTRL-C Checking
+      = FFBA            LDISPMODE	equ	0xFFBA	;(2) Last Display Mode (Holds DISPMODE while in HEX Entry)
+      = FFBC            DISPMODE	equ	0xFFBC	;(2) Display Routine
+      = FFBE            KEY_EVENT	equ	0xFFBE	;(2) Routine to call upon Key Press (changes based on user actions, see KEY_EVENT_DISPATCH)
+      = FFC0            IK_TIMER	equ	0xFFC0	;(1) IMON TIMEOUT
+      = FFC1            KEYBFMODE	equ	0xFFC1	;(1) KEY INPUT MODE. 8F=HEX INPUT, 90=Shiftable
+      = FFC2            DISPLABEL	equ	0xFFC2	;(1) Display Label Refresh
+      = FFC3            IK_HEXST	equ	0xFFC3	;(1) IMON HEX Input State
+      = FFC4            HEX_CURSOR	equ	0xFFC4	;(2) HEX Input Cursor location
+      = FFC6            HEX_READY	equ	0xFFC6	;(2) HEX Input Ready
+      = FFC8            LED_CURSOR	equ	0xFFC8	;(2) Cursor location for LED Put_Char
+      = FFCA            RXBHEAD		equ	0xFFCA	;(2) RS-232 RX BUFFER HEAD
+      = FFCC            RXBTAIL		equ	0xFFCC	;(2) RS-232 RX BUFFER TAIL
+      = FFCE            INT_VEC		equ	0xFFCE	;(2) Vector to Interrupt ISR
+      = FFD0            SCAN_PTR	equ	0xFFD0	;(2) SCAN_PTR points to next LED_DISPLAY byte to output (will always be 1 more
+                        				;    than the current hardware column because hardware automatically advances)
+      = FFD2            HALT_TEST	equ	0xFFD2	;(2) HALT_TEST
+                        ;*** END WARM_BOOT_INIT (RAM BLOCK that is to be initialized on every boot) ***
+
+
+      = FFD4            CLEARED_SPACE	equ	0xFFD4	;Bytes here and later are cleared upon init (some initialized seperately)
+      = 002C            CLEARED_LEN	equ	0xFFFF - CLEARED_SPACE + 1
+
+      = FFD4            SDISPMODE	equ	0xFFD4	;(2)
+      = FFD6            POS_BIT		equ	0xFFD6	;(1) BIT Bang RS232 Character position
+      = FFD7            POS_ACE		equ	0xFFD7	;(1) ACE RS232 Character position
+      = FFD8            ISR_FLAGS	equ	0xFFD8	;(1) Indicates how many levels the ISR has nested
+      = FFD9            RRSTATE		equ	0xFFD9	;(1) RAM/ROM SELECT STATE (FOR RETURN FROM ISR)	
+      = FFDA            XTIMER_TIC	equ	0xFFDA	;(1) Counts Down tics until Extended Timer ISR_EXXTIMER
+      = FFDB            READ_RAMROM	equ	0xFFDB	;(1) Selected RAMROM for Monitor READ Operations
+
+      = FFDC            NMI_VEC		equ	0xFFDC	;(2) NMI VEC.  Not used
+
+      = FFDE            CTRL_C_TIMER	equ	0xFFDE	;Count down the CTRL-C condition
+      = FFDF            SOFT_RST_FLAG	equ	0xFFDF	;Flag a Soft Reset (F-E Keys, Single Step)
+
+                        				;Display/Serial Comms
+      = FFE0            LED_DISPLAY	equ	0xFFE0	;8 Bytes of LED Output bytes to Scan to hardware
+                        ;8 Bytes			;Warning, LED_DISPLAY must be nibble aligned at E0 (XXE0)
+      = FFE7            LED_ANBAR	equ	0xFFE7	;LED Annunciator Bar (Part of LED_DISPLAY Buffer)
+                        				;.0 = x7 = BEEPER
+                        				;.1 = x6 = Run Mode
+                        				;.2 = x5 = Monitor Mode (Default Mode upon Power up)
+                        				;.3 = x4 = Send Data to Output Port
+                        				;.4 = x3 = Alter Memory/Register
+                        				;.5 = x2 = Enter Memory Location
+                        				;.6 = x1 = Enter Register
+
+      = FFE8            KBCOLSAMPLED	equ	0xFFE8	;Columns Sampled
+      = FFE9            KBPORTSAMPLE	equ	0xFFE9	;Input Port sampled only once on each scan, saved here
+      = FFEA            KBHEXSAMPLE	equ	0xFFEA	;KEY SAMPLER Input HEX format
+      = FFEB            KEYBSCANPV	equ	0xFFEB	;KEY Input HEX format
+      = FFEC            KEYBSCANTIMER	equ	0xFFEC	;KEY Input TIMER
+      = FFED            KEY_PRES_EV	equ	0xFFED	;KEY INPUT LAST & Currently Processing
+      = FFEE            KEY_PRES_RTN	equ	0xFFEE	;KEY LAST, for Return To Normal between strokes
+      = FFEF            KEY_PRESSED	equ	0xFFEF	;(1) KEY PRESSED
+
+      = FFF0            TicCounter	equ	0xFFF0	;Tic Counter
+                        ;TicCounter	equ	0xFFF1	;
+      = FFF2            ECHO_STATE	equ	0xFFF2	;Echo characters
+      = FFF3            XMSEQ		equ	0xFFF3	;XMODEM SEQUENCE NUMBER
+      = FFF4            XMTYPE		equ	0xFFF4	;XMODEM BLOCK TYPE (CRC/CS)
+      = FFF5            SCAN_LED	equ	0xFFF5	;Holds the next LED output
+      = FFF6            LED_DISPLAY_SB	equ	0xFFF6	;10 Bytes FFF6=Start BIT, 7,8,9,A,B,C,D,E=Data bits, F=Stop BIT
+                        ;10 bytes	equ	0xFFFF	;Warning, LED_DISPLAY_TBL must be at this address (XXF6)
+
+
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;	HOOK LOCATIONS
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+0042                    		org	0x0042
+0042   (0003)           VMAIN_MENU	DS	3
+0045   (0003)           VPUT_CHAR	DS	3
+0048   (0003)           VGET_POS	DS	3
+004B   (0003)           VGET_CHAR	DS	3
+004E   (0003)           VRX_COUNT	DS	3
+0051   (0003)           VIN_CHAR	DS	3
+0054   (0003)           VTIMED_GETCHAR	DS	3
+0057   (0003)           VPRINT		DS	3
+005A   (0003)           VBEEP		DS	3
+
+005D   (0003)           VSET_ECHO	DS	3
+0060   (0003)           VDELAY_C	DS	3
+0063   (0003)           VDELAY_A	DS	3
+
+006B                    		org	0x006B
+006B   (0003)           VPUT_VERSION	DS	3
+006E   (0003)           VPUT_HEX	DS	3
+0071   (0003)           VPUT_BYTE	DS	3
+0074   (0003)           VPUT_BC		DS	3
+0077   (0003)           VPUT_DE		DS	3
+007A   (0003)           VPUT_HL		DS	3
+007D   (0003)           VPUT_SPACE	DS	3
+0080   (0003)           VPUT_NEW_LINE	DS	3
+
+0083   (0003)           VGET_BYTE	DS	3
+0086   (0003)           VGET_WORD	DS	3
+0089   (0003)           VGET_HEX_CHAR	DS	3
+
+008C   (0003)           VCLEAR_BLOCK	DS	3
+008F   (0003)           VLD_HL_HL	DS	3
+0092   (0003)           VADD_HL_A	DS	3
+0095   (0003)           VMOV_32_HL	DS	3
+0098   (0003)           VMOV_HL_32	DS	3
+009B   (0003)           VADD_32_HL	DS	3
+009E   (0003)           VCMP_HL_32	DS	3
+00A1   (0003)           VINC_32		DS	3
+00A4   (0003)           VDEC_32		DS	3
+00A7   (0003)           VTSTZ_32	DS	3
+
+00AA   (0003)           VASC2BIN	DS	3
+00AD   (0003)           VASC2HEX	DS	3
+00B0   (0003)           VHEX2ASC	DS	3
+00B3   (0003)           VTO_UPPER	DS	3
+
+00B6   (0003)           VSET_IO		DS	3
+00B9   (0003)           VIC_KEY		DS	3
+00BC   (0003)           VLED_UPDATE	DS	3
+
+00BF   (0003)           VLED_GET_POS	DS	3
+00C2   (0003)           VLED_SET_POS	DS	3
+00C5   (0003)           VLED_HOME	DS	3
+00C8   (0003)           VLED_PUT_CHAR	DS	3
+00CB   (0003)           VLED_PRINT	DS	3
+00CE   (0003)           VLED_PUT_BYTE	DS	3
+00D1   (0003)           VLED_PUT_HEX	DS	3
+00D4   (0003)           VLED_CLEAR	DS	3
+00D7   (0003)           VLED_RIGHT	DS	3
+00DA   (0003)           VLED_LEFT	DS	3
+
+00DD   (0003)           VPRINT_FNAME	DS	3
+00E0   (0003)           VINPUT_FNAME	DS	3
+00E3   (0003)           VSD_OPEN	DS	3
+00E6   (0003)           VSD_OPEN_FILENAME DS	3
+00E9   (0003)           VPRINT_DIR	DS	3
+00EC   (0003)           VDISK_READ	DS	3
+00EF   (0003)           VSD_READ_SEC	DS	3
+00F2   (0003)           VLINE_INPUT	DS	3
+
+
+                        ;                       *********   *******    *********
+                        ;                       *********  *********   *********
+                        ;                       **         **     **   **
+                        ;                       **         **     **   **
+                        ;---------------------  *******    **     **   *******    ---------------------
+                        ;---------------------  *******    **     **   *******    ---------------------
+                        ;                       **         **     **   **
+                        ;                       **         **     **   **
+                        ;                       *********  *********   **
+                        ;                       *********   *******    **
+
+
+00F5   (0000)           		END 000
+                        		
+
+
+
+                        ;----------------------------------------------------------------------------------------------------; INSTRUCTION LIST REFERENCE
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>;
+                        ;<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<;
+                        ;----------------------------------------------------------------------------------------------------;
+
+00000 Total Error(s)
+
+ABS_SEC            0018 E  ABUSS              FF88 E  AB_LP              F5FA
+AB_RET             F604    ACE_BAUD           FF8F E  AFCLUS0            000C E
+ALV0               FA00    ALV1               FA2F    ALV2               FA5E
+ALV3               FA8D    ANBAR_DEF          FFB3 E  ASC_BIN32          F5F7
+BDOS               E006 E  BEEP_TO            FFB2 E  BIORAM             0040 E
+BIOS               EE00 E  BIT_TABLE          FF00    BMD_LP             F4A9
+BMD_NEXT           F551    BOOT_MENU          F477    BYTE_P_SEC         FF1F
+CAFCLUS            0010 E  CBOOT              EEAF    CBOOTV             EE00
+CCP                D800 E  CDISK              0004 E  CILP               EF55
+CLEARED_LEN        002C E  CLEARED_SPACE      FFD4 E  COMP32             F5EC
+COMP32_LP          F5EF    CONIN              EF4E    CONIN_RET          EF63
+CONOT              EF68    CONOTA             EF89    CONOTF             FAEB
+CONOT_RET          EF8D    CONST              EF3A    CONST_RET          EF49
+CPMLEN             1600 E  CPM_BOOTER         F455    CPM_DSK_BUFF       0080 E
+CR                 000D E  CRFCLUS            000E E  CSV0               FA1F
+CSV1               FA4E    CSV2               FA7D    CSV3               FAAC
+CS_CLR_LEN         000F E  CTRL_C_CHK         FFB8 E  CTRL_C_TIMER       FFDE E
+DATASTART          FF39    DBUF               0080 E  DF_SHIFTCNT        FF54
+DGC_DOT            F5BD    DGC_RET            F5C4    DIRBUF             F980
+DIRTY_DATA         FF0F    DIR_SECTOR         FF35    DISKNO             FAF4
+DISK_LOG_SEC       FAF6    DISK_READ          F0D2    DISPLABEL          FFC2 E
+DISPMODE           FFBC E  DIVIDE_FUNC        FF52    DMAADD             FAF2
+DOT_GETCHAR        F5AF    DO_PRINT_DIR       F5C6    DPB0               EE73
+DPB1               EE82    DPB2               EEA0    DPB3               EE91
+DPBASE             EE33    DPBPTR             F44B    DPH_PTR            FAF8
+DREAD              EFD7    DREADE             EFF3    DREADX             F004
+DWRITE             F00C    ECHO_STATE         FFF2 E  ENT_COUNT          FF41
+EOS                0000 E  FAT1START          FF31    FAT_CLEAR          FF0A E
+FAT_CLR_LEN        0039 E  FAT_COPIES         FF24    FCB_CONFIG         F42B
+FCB_CONFIG_C1      F437    FCB_PTR            FF08    FETCH_LP           F472
+FETCH_NAME         F5CC    FILEEXT            FF4B    FILENAME           FF43
+FILESIZE           FF4E    FILESIZESEARCH     F44D    FILESYS_SEC        FF27
+FNAME              0001 E  FSIZE              001C E  FSTAT              0000 E
+GETLOG             F035    GET_CHAR           F101    GET_LINE           F5D9
+GET_REG            FFB4 E  GH_START           FF0A    GL_DBP             FA85
+GL_FILESIZE        FA81    GO_HALT            F5DF    GTL_COPY_LP        F516
+GTL_HEX_OK         F52C    HALT_TEST          FFD2 E  HEX_CURSOR         FFC4 E
+HEX_READY          FFC6 E  HEX_SOURCE         FF5B    HIDDEN_SEC         FF2B
+HOME               EFB8    HW_LIST            FF95 E  HW_SETIO           FF94 E
+IK_HEXH            FF5A    IK_HEXL            FF59    IK_HEXST           FFC3 E
+IK_TIMER           FFC0 E  INCHAR_EXE         FF92 E  INPUT_FNAME        F629
+INT_VEC            FFCE E  IN_CHAR            F109    IOBYTE             0003 E
+IOPTR              FF8B E  ISR_FLAGS          FFD8 E  KBCOLSAMPLED       FFE8 E
+KBHEXSAMPLE        FFEA E  KBPORTSAMPLE       FFE9 E  KEYBFMODE          FFC1 E
+KEYBSCANPV         FFEB E  KEYBSCANTIMER      FFEC E  KEY_EVENT          FFBE E
+KEY_PRESSED        FFEF E  KEY_PRES_EV        FFED E  KEY_PRES_RTN       FFEE E
+LDISPMODE          FFBA E  LED_ANBAR          FFE7 E  LED_CURSOR         FFC8 E
+LED_DISPLAY        FFE0 E  LED_DISPLAY_SB     FFF6 E  LF                 000A E
+LINE_BUFF          FA00    LINE_BUFFEND       FA80    LIST               EF92
+LISTST             EF95    LOGICAL_SEC        FF0D    LTBSY              EF92
+MAP_RAM            F130    MAP_ROM            F13A    MENU_DO            F581
+MENU_ENTER         F564    MENU_GETCHAR       F57E    MODMASK            FF58
+MOD_FUNC           FF56    MSIZE              003D E  MUL8               FF55
+MULT_DONE          F05C    MULT_LOOP          F040    MULT_OVRF          F068
+MULT_SKIP          F050    NDSK               0004 E  NMI_VEC            FFDC E
+NSECTS             002C E  OPTS               0040 E  POS_ACE            FFD7 E
+POS_BIT            FFD6 E  PRINTI             F606    PRINT_DIR          F63B
+PRINT_FNAME        F632    PUNCH              EF93    PUTCHAR_EXE        FF90 E
+PUT_BYTE           F644    PUT_CHAR           F0F9    PUT_HEX            F60E
+PUT_HL             F64D    PUT_REG            FFB6 E  RAMROM             00C1 E
+RAMSIGNATURE       FF78 E  RC_CC              FF83 E  RC_F0              FF85 E
+RC_HALT            FF84 E  RC_HARD            FF87 E  RC_RST0            FF86 E
+RC_SOFT            FF81 E  RC_STEP            FF82 E  RC_TYPE            FF80 E
+READER             EF94    READ_RAMROM        FFDB E  REGPTR             FF8A E
+RESERVED_SEC       FF22    RESV1              FB00    RFSEC              0012 E
+ROM_SUB            F119    ROOTDIR_SIZE       FF25    RPC                FFA0 E
+RRSTATE            FFD9 E  RSAF               FF98 E  RSAF2              FFA8 E
+RSBC               FF9A E  RSBC2              FFAA E  RSCA_H             F12F
+RSCA_L             F12E    RSDE               FF9C E  RSDE2              FFAC E
+RSHL               FF9E E  RSHL2              FFAE E  RSIR               FFA6 E
+RSIX               FFA2 E  RSIY               FFA4 E  RSSP               FF96 E
+RXBHEAD            FFCA E  RXBTAIL            FFCC E  RXBUFFER           FE00
+RX_COUNT           F617    RX_ERR_LDRT        FF8C E  RX_ERR_OVR         FF8E E
+RX_ERR_STOP        FF8D E  SCAN_LED           FFF5 E  SCAN_PTR           FFD0 E
+SDC_STATUS         FF11    SDISKA             FB80    SDISKB             FBA0
+SDISKC             FBC0    SDISKD             FBE0    SDISPMODE          FFD4 E
+SDO_FSERR          F0B7    SD_CARD_TYPE       FF10    SD_PARAM           FF12
+SD_PART_BASE       FF17    SD_PART_SIZE       FF1B    SD_PART_TYPE       FF16
+SD_RAM_BUFFER      FC00    SD_READ_SEC        F111    SECT               FAEE
+SECTRN             EFD4    SEC_PER_CLUS       FF21    SEC_PER_FAT        FF2F
+SEC_PER_TRACK      FAF0    SEC_PTR            FF3D    SELDSK             EF96
+SELDSKV            EE1B    SELDSK_RET         EFB3    SETDMA             EFCE
+SETDMAV            EE24    SETSEC             EFC4    SETTRK             EFBA
+SET_FCB_PTR        F06B    SET_QUARTER        F0E9    SFPE               F098
+SOFT_RST_FLAG      FFDF E  SP_SAVE            FAFA    SSF_LP             F4F6
+SSF_NOTFOUND       F536    SSOC               0014 E  STACKNORM          F900
+STACKTOP           F940 E  STACK_TEMP         F980 E  STACK_TEMPRAM      F940
+TEMP               FAF5    TICCOUNTER         FFF0 E  TICK               0042 E
+TO_UPPER           F620    TRK                FAEC    UIVEC              FFB0 E
+VADD_32_HL         009B    VADD_HL_A          0092    VASC2BIN           00AA
+VASC2HEX           00AD    VBEEP              005A    VCLEAR_BLOCK       008C
+VCMP_HL_32         009E    VDEC_32            00A4    VDELAY_A           0063
+VDELAY_C           0060    VDISK_READ         00EC    VGET_BYTE          0083
+VGET_CHAR          004B    VGET_HEX_CHAR      0089    VGET_POS           0048
+VGET_WORD          0086    VHEX2ASC           00B0    VIC_KEY            00B9
+VIEW_FLAGS         FF0C    VINC_32            00A1    VINPUT_FNAME       00E0
+VIN_CHAR           0051    VLD_HL_HL          008F    VLED_CLEAR         00D4
+VLED_GET_POS       00BF    VLED_HOME          00C5    VLED_LEFT          00DA
+VLED_PRINT         00CB    VLED_PUT_BYTE      00CE    VLED_PUT_CHAR      00C8
+VLED_PUT_HEX       00D1    VLED_RIGHT         00D7    VLED_SET_POS       00C2
+VLED_UPDATE        00BC    VLINE_INPUT        00F2    VMAIN_MENU         0042
+VMOV_32_HL         0095    VMOV_HL_32         0098    VPRINT             0057
+VPRINT_DIR         00E9    VPRINT_FNAME       00DD    VPUT_BC            0074
+VPUT_BYTE          0071    VPUT_CHAR          0045    VPUT_DE            0077
+VPUT_HEX           006E    VPUT_HL            007A    VPUT_NEW_LINE      0080
+VPUT_SPACE         007D    VPUT_VERSION       006B    VRX_COUNT          004E
+VSD_OPEN           00E3    VSD_OPEN_FILENAME  00E6    VSD_READ_SEC       00EF
+VSET_ECHO          005D    VSET_IO            00B6    VTIMED_GETCHAR     0054
+VTO_UPPER          00B3    VTSTZ_32           00A7    WBLP               EEFD
+WBOOT              EED3    WBOOTV             EE03    WTF                FABC
+X32                F451    XMSEQ              FFF3 E  XMTYPE             FFF4 E
+XTIMER_TIC         FFDA E
